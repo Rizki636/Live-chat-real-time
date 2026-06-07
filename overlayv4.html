@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Chat Overlay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  /* Wrapper 1920x1080 yang auto-scale ke ukuran layar apapun */
+  #scale-root {
+    position: fixed;
+    top: 0; left: 0;
+    width: 1920px;
+    height: 1080px;
+    transform-origin: top left;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+    background: transparent;
+  }
+
+  /* ─── WORLD ─── */
+  #world {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 180px;
+  }
+
+  /* Ground layers */
+  #ground-back {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 60px;
+    background: #2d5a1b;
+    border-top: 6px solid #4a8c2a;
+  }
+  #ground-front {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 28px;
+    background: #3a7a22;
+    border-top: 4px solid #5aaa33;
+  }
+
+  /* Pixel grass tufts via repeating pattern */
+  #ground-back::before {
+    content: '';
+    position: absolute;
+    top: -10px;
+    left: 0;
+    width: 100%;
+    height: 14px;
+    background-image: repeating-linear-gradient(
+      90deg,
+      transparent 0px, transparent 18px,
+      #4a8c2a 18px, #4a8c2a 20px,
+      transparent 20px, transparent 28px,
+      #5aaa33 28px, #5aaa33 30px,
+      transparent 30px, transparent 40px,
+      #3a7a22 40px, #3a7a22 42px,
+      transparent 42px, transparent 58px
+    );
+  }
+
+  /* Decorative trees / bushes in back */
+  .bg-deco {
+    position: absolute;
+    bottom: 58px;
+    image-rendering: pixelated;
+  }
+
+  /* ─── CHARACTER ─── */
+  .character-wrap {
+    position: absolute;
+    bottom: 26px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transition: none;
+    z-index: 10;
+  }
+
+  .char-bubble {
+    position: absolute;
+    bottom: 58px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fff;
+    border: 3px solid #222;
+    border-radius: 4px;
+    padding: 6px 8px;
+    min-width: 100px;
+    max-width: 260px;
+    white-space: normal;
+    word-break: break-word;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 20;
+    image-rendering: pixelated;
+    box-shadow: 3px 3px 0 #222;
+  }
+  .char-bubble.visible {
+    opacity: 1;
+    animation: bubblePop 0.15s steps(2) forwards;
+  }
+  .char-bubble.hiding {
+    animation: bubbleFade 0.3s steps(3) forwards;
+  }
+
+  @keyframes bubblePop {
+    0%   { transform: translateX(-50%) scale(0.6); opacity: 0; }
+    100% { transform: translateX(-50%) scale(1);   opacity: 1; }
+  }
+  @keyframes bubbleFade {
+    0%   { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* Bubble tail */
+  .char-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 10px solid #fff;
+  }
+  .char-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -13px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 13px solid #222;
+  }
+
+  .bubble-name {
+    font-size: 7px;
+    color: #e63946;
+    margin-bottom: 3px;
+    line-height: 1.3;
+    text-shadow: 1px 1px 0 rgba(0,0,0,0.15);
+  }
+  .bubble-text {
+    font-size: 7px;
+    color: #222;
+    line-height: 1.4;
+  }
+
+  /* ─── PIXEL CHARACTER CANVAS ─── */
+  .char-canvas {
+    image-rendering: pixelated;
+    width: 48px;
+    height: 56px;
+  }
+
+  .char-name-tag {
+    font-size: 6px;
+    color: #fff;
+    text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000;
+    margin-top: 2px;
+    white-space: nowrap;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ─── DECORATIVE BACKGROUND ELEMENTS ─── */
+  .pixel-tree {
+    position: absolute;
+    bottom: 58px;
+    image-rendering: pixelated;
+  }
+
+  /* ─── NOTIFICATION / QUEUE COUNTER (debug) ─── */
+  #debug-info {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(0,0,0,0.5);
+    color: #0f0;
+    font-size: 8px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    display: none; /* set to block for debug */
+    z-index: 9999;
+  }
+</style>
+<!-- Google Font: Press Start 2P (pixel font) -->
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="scale-root">
+
+<div id="debug-info">
+  Queue: <span id="dbg-queue">0</span> |
+  Chars: <span id="dbg-chars">0</span>
+</div>
+
+<div id="world">
+  <!-- Background decoration canvas -->
+  <canvas id="bg-canvas" width="1920" height="180" style="position:absolute;bottom:0;left:0;image-rendering:pixelated;"></canvas>
+  <div id="ground-back"></div>
+  <div id="ground-front"></div>
+  <div id="char-container"></div>
+</div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  AUTO-SCALE: sesuaikan ukuran ke layar apapun
+// ═══════════════════════════════════════════════════════
+function applyScale() {
+  const root = document.getElementById('scale-root');
+  const scaleX = window.innerWidth  / 1920;
+  const scaleY = window.innerHeight / 1080;
+  const scale  = Math.min(scaleX, scaleY);
+  root.style.transform = `scale(${scale})`;
+  // Agar tetap center jika aspect ratio berbeda
+  root.style.left = ((window.innerWidth  - 1920 * scale) / 2) + 'px';
+  root.style.top  = ((window.innerHeight - 1080 * scale) / 2) + 'px';
+}
+window.addEventListener('resize', applyScale);
+applyScale();
+
+// ═══════════════════════════════════════════════════════
+//  CONFIG — sesuaikan dengan kebutuhan Anda
+// ═══════════════════════════════════════════════════════
+const CONFIG = {
+  // URL Apps Script Web App Anda (ganti setelah deploy)
+  APPS_SCRIPT_URL: 'YOUR_APPS_SCRIPT_URL_HERE',
+
+  // Seberapa sering overlay poll ke Apps Script (ms)
+  POLL_INTERVAL: 2000,
+
+  // Jeda antar komentar dari queue (ms) — anti-spam
+  QUEUE_PROCESS_INTERVAL: 1200,
+
+  // Berapa lama bubble chat tampil (ms)
+  BUBBLE_DURATION: 5000,
+
+  // Berapa menit tidak aktif sebelum karakter hilang
+  INACTIVITY_MINUTES: 5,
+
+  // Maksimum karakter aktif di layar
+  MAX_CHARS: 20,
+
+  // World bounds (px dari tepi layar)
+  // Dipersempit agar bubble chat tidak terpotong di pinggir layar
+  WORLD_LEFT: 200,
+  WORLD_RIGHT: 1720,
+
+  // Kecepatan jalan karakter (px/frame)
+  WALK_SPEED: 0.8,
+
+  // Interval ganti arah / idle (ms)
+  BEHAVIOR_INTERVAL_MIN: 2000,
+  BEHAVIOR_INTERVAL_MAX: 6000,
+};
+
+// ═══════════════════════════════════════════════════════
+//  PALETTE & CHARACTER GENERATOR
+// ═══════════════════════════════════════════════════════
+
+// 12 skema warna untuk karakter
+const COLOR_SCHEMES = [
+  { skin:'#FFCC99', hair:'#4a2c0a', shirt:'#e63946', pants:'#1d3557', shoe:'#333' },
+  { skin:'#FFCC99', hair:'#111',    shirt:'#2a9d8f', pants:'#264653', shoe:'#222' },
+  { skin:'#c68642', hair:'#1a0a00', shirt:'#e9c46a', pants:'#3d405b', shoe:'#2b2b2b' },
+  { skin:'#FFCC99', hair:'#e0a020', shirt:'#f4a261', pants:'#023047', shoe:'#333' },
+  { skin:'#8d5524', hair:'#0a0a0a', shirt:'#a8dadc', pants:'#457b9d', shoe:'#222' },
+  { skin:'#FFCC99', hair:'#cc0000', shirt:'#6a0572', pants:'#1b1b2f', shoe:'#111' },
+  { skin:'#fde0c0', hair:'#3c1f00', shirt:'#52b788', pants:'#1b4332', shoe:'#444' },
+  { skin:'#c97c3a', hair:'#2c1810', shirt:'#ff6b6b', pants:'#2d2d2d', shoe:'#111' },
+  { skin:'#FFCC99', hair:'#555',    shirt:'#48cae4', pants:'#03045e', shoe:'#333' },
+  { skin:'#fcd5b5', hair:'#8b5e3c', shirt:'#f77f00', pants:'#2b2d42', shoe:'#1a1a2e' },
+  { skin:'#d4a574', hair:'#1c0a00', shirt:'#06d6a0', pants:'#073b4c', shoe:'#222' },
+  { skin:'#FFCC99', hair:'#ff90e8', shirt:'#c77dff', pants:'#240046', shoe:'#3c096c' },
+];
+
+// Tipe wajah (simple pixel faces)
+const FACE_TYPES = ['normal','happy','cool','sleepy','excited'];
+
+// Hat types
+const HAT_TYPES = ['none','none','none','cap','beanie','crown','none'];
+
+function hashCode(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  }
+  return Math.abs(h);
+}
+
+function getCharStyle(userId) {
+  const h = hashCode(userId);
+  return {
+    colors: COLOR_SCHEMES[h % COLOR_SCHEMES.length],
+    face:   FACE_TYPES[(h >> 3) % FACE_TYPES.length],
+    hat:    HAT_TYPES[(h >> 6) % HAT_TYPES.length],
+    tall:   (h >> 9) % 3, // 0=short, 1=normal, 2=tall
+  };
+}
+
+// Draw a pixel character onto a canvas (8px grid)
+// Returns ImageData / canvas element
+function drawCharacter(style, frame, direction) {
+  const S = 4; // scale: 1 pixel = 4px on canvas → 48×56 canvas
+  const W = 12, H = 14;
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const cx = cv.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const { skin, hair, shirt, pants, shoe } = style.colors;
+
+  function px(x, y, color) {
+    cx.fillStyle = color;
+    cx.fillRect(x * S, y * S, S, S);
+  }
+  function row(xs, y, color) { xs.forEach(x => px(x, y, color)); }
+
+  // Walk animation: leg offset
+  const legAnim = [0, 1, 0, -1];
+  const legOff = legAnim[frame % 4];
+
+  // ── Body (torso) ──
+  // Head
+  row([4,5,6,7], 1, hair);
+  row([3,4,5,6,7,8], 2, hair);
+  row([3,4,5,6,7,8], 3, skin);
+  row([3,4,5,6,7,8], 4, skin);
+  row([3,4,5,6,7,8], 5, skin);
+  row([4,5,6,7], 6, hair);
+
+  // Face
+  const eyeY = 4;
+  if (direction === 'left') {
+    px(4, eyeY, '#000'); px(6, eyeY, '#000');
+  } else {
+    px(5, eyeY, '#000'); px(7, eyeY, '#000');
+  }
+
+  // Mouth
+  if (style.face === 'happy') {
+    row([5, 7], 5, '#c0392b');
+  } else if (style.face === 'cool') {
+    row([4,5,6,7], 5, '#000');
+  } else if (style.face === 'excited') {
+    row([4,5,6,7], 5, '#c0392b');
+    px(5, 5, skin);
+  } else {
+    row([5,6], 5, '#c0392b');
+  }
+
+  // Hat
+  if (style.hat === 'cap') {
+    row([3,4,5,6,7,8], 1, '#333');
+    row([4,5,6,7], 0, '#333');
+    px(8, 2, '#333');
+  } else if (style.hat === 'beanie') {
+    row([4,5,6,7], 0, shirt);
+    row([3,4,5,6,7,8], 1, shirt);
+  } else if (style.hat === 'crown') {
+    px(4,0,'#f4d03f'); px(5,1,'#f4d03f'); px(6,0,'#f4d03f'); px(7,1,'#f4d03f'); px(8,0,'#f4d03f');
+    row([4,5,6,7,8], 1, '#f4d03f');
+  }
+
+  // Torso/shirt
+  row([3,4,5,6,7,8], 7, shirt);
+  row([3,4,5,6,7,8], 8, shirt);
+
+  // Arms
+  px(2, 7, skin); px(2, 8, skin);
+  px(9, 7, skin); px(9, 8, skin);
+
+  // Pants
+  row([3,4,5,6,7,8], 9, pants);
+  row([3,4,5,6,7,8], 10, pants);
+
+  // Legs (animated)
+  const lL = 4 + (direction === 'left' ? legOff : -legOff);
+  const lR = 7 + (direction === 'right' ? legOff : -legOff);
+  px(4, 11 + (lL > 0 ? 0 : 0), pants);
+  px(7, 11, pants);
+  px(4, 12, shoe);
+  px(7, 12, shoe);
+
+  // Simple leg walk
+  if (frame % 4 < 2) {
+    px(4, 11, pants); px(4, 12, shoe);
+    px(7, 12, pants); px(7, 13, shoe);
+  } else {
+    px(4, 12, pants); px(4, 13, shoe);
+    px(7, 11, pants); px(7, 12, shoe);
+  }
+
+  return cv;
+}
+
+// ═══════════════════════════════════════════════════════
+//  BACKGROUND DECORATIONS
+// ═══════════════════════════════════════════════════════
+function drawBackground() {
+  const cv = document.getElementById('bg-canvas');
+  const cx = cv.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const S = 4;
+  function px(x, y, color, w=1, h=1) {
+    cx.fillStyle = color;
+    cx.fillRect(x * S, y * S, w * S, h * S);
+  }
+
+  // Draw several pixel trees at random-ish positions
+  const treePositions = [80, 230, 420, 600, 750, 950, 1100, 1280, 1450, 1620, 1800];
+  treePositions.forEach((tx, i) => {
+    const ty = 20 + (i % 3) * 2; // slight height variation
+    const treeCol = i % 2 === 0 ? '#2d6a4f' : '#1b4332';
+    const trunkCol = '#7f4f24';
+
+    // Trunk
+    px(tx + 2, ty + 8, trunkCol, 2, 5);
+    // Canopy layers
+    px(tx + 1, ty + 5, treeCol, 4, 1);
+    px(tx,     ty + 4, treeCol, 6, 2);
+    px(tx + 1, ty + 2, treeCol, 4, 3);
+    px(tx + 2, ty,     treeCol, 2, 3);
+  });
+
+  // Small bushes
+  const bushPos = [150, 340, 510, 680, 870, 1020, 1200, 1380, 1550, 1720];
+  bushPos.forEach((bx, i) => {
+    const by = 31;
+    const col = i % 2 === 0 ? '#40916c' : '#52b788';
+    px(bx,     by + 1, col, 4, 2);
+    px(bx + 1, by,     col, 2, 1);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHARACTER ENTITY
+// ═══════════════════════════════════════════════════════
+class Character {
+  constructor(userId, displayName) {
+    this.userId      = userId;
+    this.displayName = displayName;
+    this.style       = getCharStyle(userId);
+    this.x           = CONFIG.WORLD_LEFT + Math.random() * (CONFIG.WORLD_RIGHT - CONFIG.WORLD_LEFT - 50);
+    this.direction   = Math.random() > 0.5 ? 'right' : 'left';
+    this.state       = 'walk'; // walk | idle | jump
+    this.frame       = 0;
+    this.frameTimer  = 0;
+    this.stateTimer  = this._nextStateDelay();
+    this.jumpVy      = 0;
+    this.baseY       = 0; // relative Y for jump
+    this.lastActive  = Date.now();
+    this.bubbleText  = '';
+    this.bubbleName  = '';
+    this.bubbleTimer = 0;
+
+    this._buildDOM();
+  }
+
+  _nextStateDelay() {
+    return CONFIG.BEHAVIOR_INTERVAL_MIN +
+      Math.random() * (CONFIG.BEHAVIOR_INTERVAL_MAX - CONFIG.BEHAVIOR_INTERVAL_MIN);
+  }
+
+  _buildDOM() {
+    this.wrap = document.createElement('div');
+    this.wrap.className = 'character-wrap';
+    this.wrap.style.left = this.x + 'px';
+
+    this.bubble = document.createElement('div');
+    this.bubble.className = 'char-bubble';
+    this.bubNameEl = document.createElement('div');
+    this.bubNameEl.className = 'bubble-name';
+    this.bubTextEl = document.createElement('div');
+    this.bubTextEl.className = 'bubble-text';
+    this.bubble.appendChild(this.bubNameEl);
+    this.bubble.appendChild(this.bubTextEl);
+
+    this.canvasEl = document.createElement('canvas');
+    this.canvasEl.className = 'char-canvas';
+    this.canvasEl.width  = 48;
+    this.canvasEl.height = 56;
+    this.canvasEl.style.imageRendering = 'pixelated';
+
+    this.nameTag = document.createElement('div');
+    this.nameTag.className = 'char-name-tag';
+    this.nameTag.textContent = this.displayName.substring(0, 12);
+
+    this.wrap.appendChild(this.bubble);
+    this.wrap.appendChild(this.canvasEl);
+    this.wrap.appendChild(this.nameTag);
+
+    document.getElementById('char-container').appendChild(this.wrap);
+    this._redraw();
+  }
+
+  _redraw() {
+    const cv = drawCharacter(this.style, this.frame, this.direction);
+    const ctx = this.canvasEl.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, 48, 56);
+    ctx.drawImage(cv, 0, 0, 48, 56);
+  }
+
+  showBubble(name, text) {
+    this.bubNameEl.textContent = name;
+    this.bubTextEl.textContent = text;
+    this.bubble.classList.remove('hiding');
+    this.bubble.classList.add('visible');
+    this.bubbleTimer = CONFIG.BUBBLE_DURATION;
+    // Jump reaction
+    this.state = 'jump';
+    this.jumpVy = -5;
+    this.lastActive = Date.now();
+  }
+
+  _hideBubble() {
+    this.bubble.classList.remove('visible');
+    this.bubble.classList.add('hiding');
+    setTimeout(() => this.bubble.classList.remove('hiding'), 350);
+  }
+
+  update(dt) {
+    // Bubble timer
+    if (this.bubbleTimer > 0) {
+      this.bubbleTimer -= dt;
+      if (this.bubbleTimer <= 0) {
+        this._hideBubble();
+      }
+    }
+
+    // Animation frame
+    this.frameTimer += dt;
+    if (this.frameTimer > 180) {
+      this.frame++;
+      this.frameTimer = 0;
+    }
+
+    // State machine
+    this.stateTimer -= dt;
+    if (this.stateTimer <= 0 && this.state !== 'jump') {
+      const r = Math.random();
+      if (r < 0.5) {
+        this.state = 'walk';
+        this.direction = Math.random() > 0.5 ? 'right' : 'left';
+      } else {
+        this.state = 'idle';
+      }
+      this.stateTimer = this._nextStateDelay();
+    }
+
+    // Movement
+    if (this.state === 'walk') {
+      const dx = this.direction === 'right' ? CONFIG.WALK_SPEED * (dt / 16) : -CONFIG.WALK_SPEED * (dt / 16);
+      this.x += dx;
+      if (this.x < CONFIG.WORLD_LEFT)  { this.x = CONFIG.WORLD_LEFT;  this.direction = 'right'; }
+      if (this.x > CONFIG.WORLD_RIGHT - 50) { this.x = CONFIG.WORLD_RIGHT - 50; this.direction = 'left'; }
+    }
+
+    // Jump
+    if (this.state === 'jump') {
+      this.jumpVy += 0.4;
+      this.baseY += this.jumpVy;
+      if (this.baseY >= 0) {
+        this.baseY = 0;
+        this.jumpVy = 0;
+        this.state = 'idle';
+        this.stateTimer = this._nextStateDelay();
+      }
+    }
+
+    // Apply position
+    this.wrap.style.left   = Math.round(this.x) + 'px';
+    this.wrap.style.bottom = (26 - this.baseY) + 'px';
+
+    // Flip canvas horizontally based on direction
+    this.canvasEl.style.transform = this.direction === 'left' ? 'scaleX(-1)' : 'scaleX(1)';
+    this._redraw();
+  }
+
+  isExpired() {
+    const minutes = (Date.now() - this.lastActive) / 60000;
+    return minutes >= CONFIG.INACTIVITY_MINUTES;
+  }
+
+  remove() {
+    // Fade out
+    this.wrap.style.transition = 'opacity 1s';
+    this.wrap.style.opacity = '0';
+    setTimeout(() => {
+      if (this.wrap.parentNode) this.wrap.parentNode.removeChild(this.wrap);
+    }, 1000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAIN SYSTEM
+// ═══════════════════════════════════════════════════════
+const characters = new Map(); // userId → Character
+const commentQueue = [];
+let lastQueueProcess = 0;
+let lastPoll = 0;
+let lastInactivityCheck = 0;
+let lastTs = '';  // last processed timestamp from Apps Script
+
+function processQueue(now) {
+  if (commentQueue.length === 0) return;
+  if (now - lastQueueProcess < CONFIG.QUEUE_PROCESS_INTERVAL) return;
+  lastQueueProcess = now;
+
+  const item = commentQueue.shift();
+  applyComment(item);
+  updateDebug();
+}
+
+function applyComment({ userId, displayName, message }) {
+  // Cek batas maksimum karakter
+  if (!characters.has(userId) && characters.size >= CONFIG.MAX_CHARS) {
+    // Hapus karakter yang paling lama tidak aktif
+    let oldest = null, oldestTime = Infinity;
+    for (const [id, ch] of characters) {
+      if (ch.lastActive < oldestTime) { oldestTime = ch.lastActive; oldest = id; }
+    }
+    if (oldest) {
+      characters.get(oldest).remove();
+      characters.delete(oldest);
+    }
+  }
+
+  if (!characters.has(userId)) {
+    const ch = new Character(userId, displayName);
+    characters.set(userId, ch);
+  }
+
+  const ch = characters.get(userId);
+  ch.showBubble(displayName, message);
+}
+
+async function pollComments() {
+  if (!CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') return;
+
+  try {
+    const url = CONFIG.APPS_SCRIPT_URL + (lastTs ? `?after=${encodeURIComponent(lastTs)}` : '');
+    const res  = await fetch(url);
+    const data = await res.json();
+
+    if (data && Array.isArray(data.comments) && data.comments.length > 0) {
+      data.comments.forEach(c => commentQueue.push(c));
+      lastTs = data.comments[data.comments.length - 1].timestamp || '';
+    }
+  } catch (e) {
+    // silent fail — network issues shouldn't crash overlay
+  }
+}
+
+function checkInactivity() {
+  for (const [id, ch] of characters) {
+    if (ch.isExpired()) {
+      ch.remove();
+      characters.delete(id);
+    }
+  }
+}
+
+function updateDebug() {
+  document.getElementById('dbg-queue').textContent = commentQueue.length;
+  document.getElementById('dbg-chars').textContent = characters.size;
+}
+
+// ─── GAME LOOP ───
+let lastTime = 0;
+function loop(timestamp) {
+  const dt = timestamp - lastTime;
+  lastTime = timestamp;
+
+  // Update characters
+  for (const ch of characters.values()) {
+    ch.update(dt);
+  }
+
+  // Process comment queue
+  processQueue(timestamp);
+
+  // Poll interval
+  if (timestamp - lastPoll > CONFIG.POLL_INTERVAL) {
+    lastPoll = timestamp;
+    pollComments();
+  }
+
+  // Inactivity check every 30s
+  if (timestamp - lastInactivityCheck > 30000) {
+    lastInactivityCheck = timestamp;
+    checkInactivity();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── INIT ───
+window.addEventListener('load', () => {
+  drawBackground();
+  requestAnimationFrame(loop);
+
+  // ── DEMO MODE: inject fake comments jika URL belum diset ──
+  if (CONFIG.APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
+    const demoComments = [
+      { userId: 'user_andi',   displayName: 'Andi Pratama',  message: 'Halo semuanya! 👋' },
+      { userId: 'user_budi',   displayName: 'Budi Santoso',  message: 'Stream keren banget!' },
+      { userId: 'user_citra',  displayName: 'Citra Dewi',    message: 'Aku baru join, ada apa? 😍' },
+      { userId: 'user_dian',   displayName: 'Dian Rahmat',   message: 'GG WP!' },
+      { userId: 'user_eko',    displayName: 'Eko Nugroho',   message: 'mantap jiwa!!!' },
+      { userId: 'user_fani',   displayName: 'Fani Lestari',  message: 'Lucu banget karakternya haha' },
+      { userId: 'user_gita',   displayName: 'Gita Saraswati',message: 'semangat terus ya kak!' },
+      { userId: 'user_hendra', displayName: 'Hendra W',      message: 'ini keren parah sumpah' },
+      { userId: 'user_andi',   displayName: 'Andi Pratama',  message: 'Wkwk karakter aku jalan-jalan' },
+      { userId: 'user_budi',   displayName: 'Budi Santoso',  message: 'HYPE!' },
+      { userId: 'user_irma',   displayName: 'Irma Juliana',  message: 'Hai teman-teman!! 🎉' },
+      { userId: 'user_joko',   displayName: 'Joko Widodo Sr',message: 'Sudah lama nonton, baru komentar' },
+    ];
+
+    let demoIdx = 0;
+    const demoInterval = setInterval(() => {
+      if (demoIdx >= demoComments.length) {
+        clearInterval(demoInterval);
+        return;
+      }
+      commentQueue.push(demoComments[demoIdx++]);
+      updateDebug();
+    }, 2500);
+  }
+});
+
+// ─── WINDOW MESSAGE: inject comment dari parent frame (opsional) ───
+// Bisa digunakan untuk testing tanpa Apps Script
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'NEW_COMMENT') {
+    commentQueue.push(e.data.payload);
+    updateDebug();
+  }
+});
+</script>
+</body>
+</html>
