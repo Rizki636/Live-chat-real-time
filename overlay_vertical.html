@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Chat Overlay — Vertical 9:16</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  /*
+   * ─── LAYOUT VERTIKAL 1080×1920 ───
+   *
+   *  ┌──────────────┐  y=0
+   *  │  AREA ATAS   │  ~456px  (isi bebas / transparent)
+   *  ├──────────────┤  y=456
+   *  │  GAME AREA   │  ~608px  (landscape game strip — TIDAK disentuh overlay)
+   *  ├──────────────┤  y=1064
+   *  │  KARAKTER    │  ~856px  (zona karakter jalan + tanah)
+   *  └──────────────┘  y=1920
+   *
+   *  Game strip = lebar 1080 × tinggi 608px (rasio 16:9 landscape, pas di layar 1080 lebar)
+   *  Zona karakter = sisa bawah ~856px
+   */
+
+  body {
+    width: 1080px;
+    height: 1920px;
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Press Start 2P', monospace;
+  }
+
+  /* ─── WORLD (zona karakter di bawah) ─── */
+  #world {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 1080px;
+    /* Tinggi zona karakter: 1920 - 456 (atas) - 608 (game) = 856px */
+    height: 856px;
+  }
+
+  /* Ground layers */
+  #ground-back {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 70px;
+    background: #2d5a1b;
+    border-top: 6px solid #4a8c2a;
+  }
+  #ground-front {
+    position: absolute;
+    bottom: 0;
+    width: 100%;
+    height: 32px;
+    background: #3a7a22;
+    border-top: 4px solid #5aaa33;
+  }
+
+  /* Pixel grass tufts */
+  #ground-back::before {
+    content: '';
+    position: absolute;
+    top: -12px;
+    left: 0;
+    width: 100%;
+    height: 16px;
+    background-image: repeating-linear-gradient(
+      90deg,
+      transparent 0px, transparent 14px,
+      #4a8c2a 14px, #4a8c2a 16px,
+      transparent 16px, transparent 22px,
+      #5aaa33 22px, #5aaa33 24px,
+      transparent 24px, transparent 34px,
+      #3a7a22 34px, #3a7a22 36px,
+      transparent 36px, transparent 48px
+    );
+  }
+
+  /* ─── CHARACTER ─── */
+  .character-wrap {
+    position: absolute;
+    bottom: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transition: none;
+    z-index: 10;
+  }
+
+  .char-bubble {
+    position: absolute;
+    bottom: 68px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fff;
+    border: 3px solid #222;
+    border-radius: 4px;
+    padding: 7px 10px;
+    min-width: 90px;
+    max-width: 220px;
+    white-space: normal;
+    word-break: break-word;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 20;
+    image-rendering: pixelated;
+    box-shadow: 3px 3px 0 #222;
+  }
+  .char-bubble.visible {
+    opacity: 1;
+    animation: bubblePop 0.15s steps(2) forwards;
+  }
+  .char-bubble.hiding {
+    animation: bubbleFade 0.3s steps(3) forwards;
+  }
+
+  @keyframes bubblePop {
+    0%   { transform: translateX(-50%) scale(0.6); opacity: 0; }
+    100% { transform: translateX(-50%) scale(1);   opacity: 1; }
+  }
+  @keyframes bubbleFade {
+    0%   { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  /* Bubble tail */
+  .char-bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 10px solid #fff;
+  }
+  .char-bubble::before {
+    content: '';
+    position: absolute;
+    bottom: -13px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 13px solid #222;
+  }
+
+  .bubble-name {
+    font-size: 8px;
+    color: #e63946;
+    margin-bottom: 3px;
+    line-height: 1.3;
+    text-shadow: 1px 1px 0 rgba(0,0,0,0.15);
+  }
+  .bubble-text {
+    font-size: 8px;
+    color: #222;
+    line-height: 1.4;
+  }
+
+  /* ─── PIXEL CHARACTER CANVAS ─── */
+  /* Diperbesar sedikit agar kelihatan di layar vertikal */
+  .char-canvas {
+    image-rendering: pixelated;
+    width: 56px;
+    height: 66px;
+  }
+
+  .char-name-tag {
+    font-size: 7px;
+    color: #fff;
+    text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000;
+    margin-top: 2px;
+    white-space: nowrap;
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ─── DEBUG INFO ─── */
+  #debug-info {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(0,0,0,0.5);
+    color: #0f0;
+    font-size: 9px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    display: none; /* ubah ke block untuk debug */
+    z-index: 9999;
+  }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="debug-info">
+  Queue: <span id="dbg-queue">0</span> |
+  Chars: <span id="dbg-chars">0</span>
+</div>
+
+<div id="world">
+  <!--
+    bg-canvas: 1080 × 856 (seluruh zona karakter)
+    Angka 856 = 1920 - 456 (area atas) - 608 (game landscape strip)
+  -->
+  <canvas id="bg-canvas" width="1080" height="856"
+          style="position:absolute;bottom:0;left:0;image-rendering:pixelated;"></canvas>
+  <div id="ground-back"></div>
+  <div id="ground-front"></div>
+  <div id="char-container"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════
+const CONFIG = {
+  // ← Ganti dengan URL Web App Apps Script kamu
+  APPS_SCRIPT_URL: 'YOUR_APPS_SCRIPT_URL_HERE',
+
+  POLL_INTERVAL: 2000,           // poll tiap 2 detik
+  QUEUE_PROCESS_INTERVAL: 1200,  // tampil 1 komentar / 1.2 detik
+  BUBBLE_DURATION: 5000,         // bubble tampil 5 detik
+  INACTIVITY_MINUTES: 5,         // karakter hilang setelah 5 menit tidak aktif
+  MAX_CHARS: 12,                 // maks karakter di layar (lebih sedikit, layar lebih sempit)
+
+  // ── Zona jalan karakter ──
+  // Layar = 1080px lebar
+  // Kiri 80px (ruang bubble kiri) — Kanan 1000px (ruang bubble kanan + lebar karakter 56px)
+  WORLD_LEFT:  80,
+  WORLD_RIGHT: 1000,
+
+  // Lebar layar (dipakai untuk clamp bubble)
+  SCREEN_WIDTH: 1080,
+
+  WALK_SPEED: 0.6,               // sedikit lebih pelan, sesuai layar lebih kecil
+
+  BEHAVIOR_INTERVAL_MIN: 2000,
+  BEHAVIOR_INTERVAL_MAX: 6000,
+};
+
+// ═══════════════════════════════════════════════════════
+//  PALETTE & CHARACTER GENERATOR
+// ═══════════════════════════════════════════════════════
+const COLOR_SCHEMES = [
+  { skin:'#FFCC99', hair:'#4a2c0a', shirt:'#e63946', pants:'#1d3557', shoe:'#333' },
+  { skin:'#FFCC99', hair:'#111',    shirt:'#2a9d8f', pants:'#264653', shoe:'#222' },
+  { skin:'#c68642', hair:'#1a0a00', shirt:'#e9c46a', pants:'#3d405b', shoe:'#2b2b2b' },
+  { skin:'#FFCC99', hair:'#e0a020', shirt:'#f4a261', pants:'#023047', shoe:'#333' },
+  { skin:'#8d5524', hair:'#0a0a0a', shirt:'#a8dadc', pants:'#457b9d', shoe:'#222' },
+  { skin:'#FFCC99', hair:'#cc0000', shirt:'#6a0572', pants:'#1b1b2f', shoe:'#111' },
+  { skin:'#fde0c0', hair:'#3c1f00', shirt:'#52b788', pants:'#1b4332', shoe:'#444' },
+  { skin:'#c97c3a', hair:'#2c1810', shirt:'#ff6b6b', pants:'#2d2d2d', shoe:'#111' },
+  { skin:'#FFCC99', hair:'#555',    shirt:'#48cae4', pants:'#03045e', shoe:'#333' },
+  { skin:'#fcd5b5', hair:'#8b5e3c', shirt:'#f77f00', pants:'#2b2d42', shoe:'#1a1a2e' },
+  { skin:'#d4a574', hair:'#1c0a00', shirt:'#06d6a0', pants:'#073b4c', shoe:'#222' },
+  { skin:'#FFCC99', hair:'#ff90e8', shirt:'#c77dff', pants:'#240046', shoe:'#3c096c' },
+];
+
+const FACE_TYPES = ['normal','happy','cool','sleepy','excited'];
+const HAT_TYPES  = ['none','none','none','cap','beanie','crown','none'];
+
+function hashCode(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  }
+  return Math.abs(h);
+}
+
+function getCharStyle(userId) {
+  const h = hashCode(userId);
+  return {
+    colors: COLOR_SCHEMES[h % COLOR_SCHEMES.length],
+    face:   FACE_TYPES[(h >> 3) % FACE_TYPES.length],
+    hat:    HAT_TYPES[(h >> 6) % HAT_TYPES.length],
+    tall:   (h >> 9) % 3,
+  };
+}
+
+function drawCharacter(style, frame, direction) {
+  const S = 4;
+  const W = 12, H = 14;
+  const cv = document.createElement('canvas');
+  cv.width = W * S; cv.height = H * S;
+  const cx = cv.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const { skin, hair, shirt, pants, shoe } = style.colors;
+
+  function px(x, y, color) {
+    cx.fillStyle = color;
+    cx.fillRect(x * S, y * S, S, S);
+  }
+  function row(xs, y, color) { xs.forEach(x => px(x, y, color)); }
+
+  const legAnim = [0, 1, 0, -1];
+  const legOff  = legAnim[frame % 4];
+
+  // Head
+  row([4,5,6,7], 1, hair);
+  row([3,4,5,6,7,8], 2, hair);
+  row([3,4,5,6,7,8], 3, skin);
+  row([3,4,5,6,7,8], 4, skin);
+  row([3,4,5,6,7,8], 5, skin);
+  row([4,5,6,7], 6, hair);
+
+  // Face
+  const eyeY = 4;
+  if (direction === 'left') {
+    px(4, eyeY, '#000'); px(6, eyeY, '#000');
+  } else {
+    px(5, eyeY, '#000'); px(7, eyeY, '#000');
+  }
+
+  // Mouth
+  if (style.face === 'happy') {
+    row([5, 7], 5, '#c0392b');
+  } else if (style.face === 'cool') {
+    row([4,5,6,7], 5, '#000');
+  } else if (style.face === 'excited') {
+    row([4,5,6,7], 5, '#c0392b');
+    px(5, 5, skin);
+  } else {
+    row([5,6], 5, '#c0392b');
+  }
+
+  // Hat
+  if (style.hat === 'cap') {
+    row([3,4,5,6,7,8], 1, '#333');
+    row([4,5,6,7], 0, '#333');
+    px(8, 2, '#333');
+  } else if (style.hat === 'beanie') {
+    row([4,5,6,7], 0, shirt);
+    row([3,4,5,6,7,8], 1, shirt);
+  } else if (style.hat === 'crown') {
+    px(4,0,'#f4d03f'); px(5,1,'#f4d03f'); px(6,0,'#f4d03f'); px(7,1,'#f4d03f'); px(8,0,'#f4d03f');
+    row([4,5,6,7,8], 1, '#f4d03f');
+  }
+
+  // Torso
+  row([3,4,5,6,7,8], 7, shirt);
+  row([3,4,5,6,7,8], 8, shirt);
+  px(2, 7, skin); px(2, 8, skin);
+  px(9, 7, skin); px(9, 8, skin);
+
+  // Pants
+  row([3,4,5,6,7,8], 9, pants);
+  row([3,4,5,6,7,8], 10, pants);
+
+  // Legs (animated)
+  px(4, 11, pants); px(7, 11, pants);
+  px(4, 12, shoe);  px(7, 12, shoe);
+
+  if (frame % 4 < 2) {
+    px(4, 11, pants); px(4, 12, shoe);
+    px(7, 12, pants); px(7, 13, shoe);
+  } else {
+    px(4, 12, pants); px(4, 13, shoe);
+    px(7, 11, pants); px(7, 12, shoe);
+  }
+
+  return cv;
+}
+
+// ═══════════════════════════════════════════════════════
+//  BACKGROUND DECORATIONS
+// ═══════════════════════════════════════════════════════
+function drawBackground() {
+  const cv = document.getElementById('bg-canvas');
+  const cx = cv.getContext('2d');
+  cx.imageSmoothingEnabled = false;
+
+  const S = 4;
+  function px(x, y, color, w=1, h=1) {
+    cx.fillStyle = color;
+    cx.fillRect(x * S, y * S, w * S, h * S);
+  }
+
+  // Pohon — disesuaikan untuk lebar 1080px
+  // x dalam satuan "pixel unit" (sebelum scale S=4), jadi 1080/4 = 270 unit
+  const treePositions = [5, 30, 55, 80, 110, 140, 170, 200, 235, 260];
+  treePositions.forEach((tx, i) => {
+    const ty = 100 + (i % 3) * 2;
+    const treeCol  = i % 2 === 0 ? '#2d6a4f' : '#1b4332';
+    const trunkCol = '#7f4f24';
+    px(tx + 2, ty + 8, trunkCol, 2, 5);
+    px(tx + 1, ty + 5, treeCol, 4, 1);
+    px(tx,     ty + 4, treeCol, 6, 2);
+    px(tx + 1, ty + 2, treeCol, 4, 3);
+    px(tx + 2, ty,     treeCol, 2, 3);
+  });
+
+  // Semak kecil
+  const bushPos = [15, 45, 70, 100, 130, 160, 195, 220, 250];
+  bushPos.forEach((bx, i) => {
+    const by  = 148;
+    const col = i % 2 === 0 ? '#40916c' : '#52b788';
+    px(bx,     by + 1, col, 4, 2);
+    px(bx + 1, by,     col, 2, 1);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  CHARACTER ENTITY
+// ═══════════════════════════════════════════════════════
+class Character {
+  constructor(userId, displayName) {
+    this.userId      = userId;
+    this.displayName = displayName;
+    this.style       = getCharStyle(userId);
+    // Spawn dalam zona aman (WORLD_LEFT s/d WORLD_RIGHT - lebar karakter 56px)
+    this.x           = CONFIG.WORLD_LEFT + Math.random() * (CONFIG.WORLD_RIGHT - CONFIG.WORLD_LEFT - 56);
+    this.direction   = Math.random() > 0.5 ? 'right' : 'left';
+    this.state       = 'walk';
+    this.frame       = 0;
+    this.frameTimer  = 0;
+    this.stateTimer  = this._nextStateDelay();
+    this.jumpVy      = 0;
+    this.baseY       = 0;
+    this.lastActive  = Date.now();
+    this.bubbleTimer = 0;
+
+    this._buildDOM();
+  }
+
+  _nextStateDelay() {
+    return CONFIG.BEHAVIOR_INTERVAL_MIN +
+      Math.random() * (CONFIG.BEHAVIOR_INTERVAL_MAX - CONFIG.BEHAVIOR_INTERVAL_MIN);
+  }
+
+  _buildDOM() {
+    this.wrap = document.createElement('div');
+    this.wrap.className = 'character-wrap';
+    this.wrap.style.left = this.x + 'px';
+
+    this.bubble = document.createElement('div');
+    this.bubble.className = 'char-bubble';
+    this.bubNameEl = document.createElement('div');
+    this.bubNameEl.className = 'bubble-name';
+    this.bubTextEl = document.createElement('div');
+    this.bubTextEl.className = 'bubble-text';
+    this.bubble.appendChild(this.bubNameEl);
+    this.bubble.appendChild(this.bubTextEl);
+
+    this.canvasEl = document.createElement('canvas');
+    this.canvasEl.className = 'char-canvas';
+    this.canvasEl.width  = 48;
+    this.canvasEl.height = 56;
+    this.canvasEl.style.imageRendering = 'pixelated';
+
+    this.nameTag = document.createElement('div');
+    this.nameTag.className = 'char-name-tag';
+    this.nameTag.textContent = this.displayName.substring(0, 12);
+
+    this.wrap.appendChild(this.bubble);
+    this.wrap.appendChild(this.canvasEl);
+    this.wrap.appendChild(this.nameTag);
+
+    document.getElementById('char-container').appendChild(this.wrap);
+    this._redraw();
+  }
+
+  _redraw() {
+    const cv  = drawCharacter(this.style, this.frame, this.direction);
+    const ctx = this.canvasEl.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, 48, 56);
+    ctx.drawImage(cv, 0, 0, 48, 56);
+  }
+
+  showBubble(name, text) {
+    this.bubNameEl.textContent = name;
+    this.bubTextEl.textContent = text;
+    this.bubble.classList.remove('hiding');
+    this.bubble.classList.add('visible');
+    this.bubbleTimer = CONFIG.BUBBLE_DURATION;
+    this.state  = 'jump';
+    this.jumpVy = -5;
+    this.lastActive = Date.now();
+
+    // Clamp bubble agar tidak keluar dari tepi layar
+    requestAnimationFrame(() => {
+      const bubW       = this.bubble.offsetWidth || 140;
+      const charCenter = this.x + 28; // setengah lebar char (56/2)
+      const bubLeft    = charCenter - bubW / 2;
+      const bubRight   = charCenter + bubW / 2;
+      const margin     = 10;
+      let offsetX = 0;
+      if (bubLeft < margin) {
+        offsetX = margin - bubLeft;
+      } else if (bubRight > CONFIG.SCREEN_WIDTH - margin) {
+        offsetX = (CONFIG.SCREEN_WIDTH - margin) - bubRight;
+      }
+      this.bubble.style.transform = `translateX(calc(-50% + ${offsetX}px))`;
+    });
+  }
+
+  _hideBubble() {
+    this.bubble.classList.remove('visible');
+    this.bubble.classList.add('hiding');
+    setTimeout(() => this.bubble.classList.remove('hiding'), 350);
+  }
+
+  update(dt) {
+    // Bubble timer
+    if (this.bubbleTimer > 0) {
+      this.bubbleTimer -= dt;
+      if (this.bubbleTimer <= 0) this._hideBubble();
+    }
+
+    // Animation frame
+    this.frameTimer += dt;
+    if (this.frameTimer > 180) {
+      this.frame++;
+      this.frameTimer = 0;
+    }
+
+    // State machine
+    this.stateTimer -= dt;
+    if (this.stateTimer <= 0 && this.state !== 'jump') {
+      const r = Math.random();
+      this.state     = r < 0.5 ? 'walk' : 'idle';
+      this.direction = Math.random() > 0.5 ? 'right' : 'left';
+      this.stateTimer = this._nextStateDelay();
+    }
+
+    // Movement
+    if (this.state === 'walk') {
+      const dx = this.direction === 'right'
+        ? CONFIG.WALK_SPEED * (dt / 16)
+        : -CONFIG.WALK_SPEED * (dt / 16);
+      this.x += dx;
+      if (this.x < CONFIG.WORLD_LEFT)        { this.x = CONFIG.WORLD_LEFT;        this.direction = 'right'; }
+      if (this.x > CONFIG.WORLD_RIGHT - 56)  { this.x = CONFIG.WORLD_RIGHT - 56;  this.direction = 'left';  }
+    }
+
+    // Jump
+    if (this.state === 'jump') {
+      this.jumpVy += 0.4;
+      this.baseY  += this.jumpVy;
+      if (this.baseY >= 0) {
+        this.baseY  = 0;
+        this.jumpVy = 0;
+        this.state  = 'idle';
+        this.stateTimer = this._nextStateDelay();
+      }
+    }
+
+    // Apply position
+    this.wrap.style.left   = Math.round(this.x) + 'px';
+    this.wrap.style.bottom = (30 - this.baseY) + 'px';
+
+    this.canvasEl.style.transform = this.direction === 'left' ? 'scaleX(-1)' : 'scaleX(1)';
+    this._redraw();
+  }
+
+  isExpired() {
+    return (Date.now() - this.lastActive) / 60000 >= CONFIG.INACTIVITY_MINUTES;
+  }
+
+  remove() {
+    this.wrap.style.transition = 'opacity 1s';
+    this.wrap.style.opacity    = '0';
+    setTimeout(() => {
+      if (this.wrap.parentNode) this.wrap.parentNode.removeChild(this.wrap);
+    }, 1000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAIN SYSTEM
+// ═══════════════════════════════════════════════════════
+const characters = new Map();
+const commentQueue = [];
+let lastQueueProcess = 0;
+let lastPoll = 0;
+let lastInactivityCheck = 0;
+let lastTs = '';
+
+function processQueue(now) {
+  if (commentQueue.length === 0) return;
+  if (now - lastQueueProcess < CONFIG.QUEUE_PROCESS_INTERVAL) return;
+  lastQueueProcess = now;
+  applyComment(commentQueue.shift());
+  updateDebug();
+}
+
+function applyComment({ userId, displayName, message }) {
+  if (!characters.has(userId) && characters.size >= CONFIG.MAX_CHARS) {
+    let oldest = null, oldestTime = Infinity;
+    for (const [id, ch] of characters) {
+      if (ch.lastActive < oldestTime) { oldestTime = ch.lastActive; oldest = id; }
+    }
+    if (oldest) { characters.get(oldest).remove(); characters.delete(oldest); }
+  }
+
+  if (!characters.has(userId)) {
+    characters.set(userId, new Character(userId, displayName));
+  }
+
+  characters.get(userId).showBubble(displayName, message);
+}
+
+async function pollComments() {
+  if (!CONFIG.APPS_SCRIPT_URL || CONFIG.APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') return;
+  try {
+    const url  = CONFIG.APPS_SCRIPT_URL + (lastTs ? `?after=${encodeURIComponent(lastTs)}` : '');
+    const res  = await fetch(url);
+    const data = await res.json();
+    if (data && Array.isArray(data.comments) && data.comments.length > 0) {
+      data.comments.forEach(c => commentQueue.push(c));
+      lastTs = data.comments[data.comments.length - 1].timestamp || '';
+    }
+  } catch (e) { /* silent fail */ }
+}
+
+function checkInactivity() {
+  for (const [id, ch] of characters) {
+    if (ch.isExpired()) { ch.remove(); characters.delete(id); }
+  }
+}
+
+function updateDebug() {
+  document.getElementById('dbg-queue').textContent = commentQueue.length;
+  document.getElementById('dbg-chars').textContent = characters.size;
+}
+
+// ─── GAME LOOP ───
+let lastTime = 0;
+function loop(timestamp) {
+  const dt = timestamp - lastTime;
+  lastTime = timestamp;
+
+  for (const ch of characters.values()) ch.update(dt);
+  processQueue(timestamp);
+
+  if (timestamp - lastPoll > CONFIG.POLL_INTERVAL) {
+    lastPoll = timestamp;
+    pollComments();
+  }
+  if (timestamp - lastInactivityCheck > 30000) {
+    lastInactivityCheck = timestamp;
+    checkInactivity();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+// ─── INIT ───
+window.addEventListener('load', () => {
+  drawBackground();
+  requestAnimationFrame(loop);
+
+  // ── DEMO MODE ──
+  if (CONFIG.APPS_SCRIPT_URL === 'YOUR_APPS_SCRIPT_URL_HERE') {
+    const demoComments = [
+      { userId: 'user_andi',   displayName: 'Andi Pratama',   message: 'Halo semuanya! 👋' },
+      { userId: 'user_budi',   displayName: 'Budi Santoso',   message: 'Stream keren banget!' },
+      { userId: 'user_citra',  displayName: 'Citra Dewi',     message: 'Aku baru join 😍' },
+      { userId: 'user_dian',   displayName: 'Dian Rahmat',    message: 'GG WP!' },
+      { userId: 'user_eko',    displayName: 'Eko Nugroho',    message: 'mantap jiwa!!!' },
+      { userId: 'user_fani',   displayName: 'Fani Lestari',   message: 'Lucu banget haha' },
+      { userId: 'user_gita',   displayName: 'Gita Saraswati', message: 'semangat terus kak!' },
+      { userId: 'user_hendra', displayName: 'Hendra W',       message: 'ini keren parah!' },
+      { userId: 'user_andi',   displayName: 'Andi Pratama',   message: 'Karakter aku jalan2 wkwk' },
+      { userId: 'user_budi',   displayName: 'Budi Santoso',   message: 'HYPE!' },
+    ];
+    let demoIdx = 0;
+    const demoInterval = setInterval(() => {
+      if (demoIdx >= demoComments.length) { clearInterval(demoInterval); return; }
+      commentQueue.push(demoComments[demoIdx++]);
+      updateDebug();
+    }, 2500);
+  }
+});
+
+// ─── WINDOW MESSAGE (testing tanpa Apps Script) ───
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'NEW_COMMENT') {
+    commentQueue.push(e.data.payload);
+    updateDebug();
+  }
+});
+</script>
+</body>
+</html>
